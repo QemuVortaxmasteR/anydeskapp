@@ -1,16 +1,16 @@
-name: RustDesk + Win10
+name: AnyDesk Official CLI Setup (Auto Renew ID)
 
 on:
   workflow_dispatch:
 
 jobs:
-  run-rustdesk:
-    runs-on: windows-2022
+  run-anydesk:
+    runs-on: windows-latest
     steps:
-      - name: Install & Connect Tailscale
+      - name: 1. Install & Connect Tailscale
         shell: powershell
         run: |
-          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
+          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.92.3-amd64.msi"
           $installerPath = "$env:TEMP\tailscale.msi"
           Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
           Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
@@ -18,69 +18,43 @@ jobs:
           $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
           "TAILSCALE_IP=$tsIP" | Out-File -Append $env:GITHUB_ENV
 
-      - name: Install RustDesk
-        shell: powershell
+      - name: 2. Install AnyDesk
+        shell: cmd
         run: |
-          $rdUrl = "https://github.com/rustdesk/rustdesk/releases/download/1.3.1/rustdesk-1.3.1-x86_64.msi"
-          $installerPath = "$env:TEMP\rustdesk.msi"
-          Invoke-WebRequest -Uri $rdUrl -OutFile $installerPath
-          Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
-          & "C:\Program Files\RustDesk\rustdesk.exe" --password "MR.English2008"
-          Start-Sleep -Seconds 5
-          & "C:\Program Files\RustDesk\rustdesk.exe" --get-id | Out-File -FilePath "$env:TEMP\id.txt"
-          $rdID = (Get-Content "$env:TEMP\id.txt").Trim()
-          "RUSTDESK_ID=$rdID" | Out-File -Append $env:GITHUB_ENV
+          powershell -Command "Invoke-WebRequest -Uri 'https://download.anydesk.com/AnyDesk.exe' -OutFile 'AnyDesk.exe'"
+          AnyDesk.exe --install "C:\AnyDesk" --start-with-win --silent
+          powershell -Command "Start-Sleep -Seconds 20"
 
-      - name: Install AnyDesk
-        shell: powershell
+      - name: 3. AnyDesk ID Loop (55min Renew)
+        shell: cmd
         run: |
-          $adUrl = "https://download.anydesk.com/AnyDesk.exe"
-          $adPath = "C:\AnyDesk.exe"
-          Invoke-WebRequest -Uri $adUrl -OutFile $adPath
-          Start-Process $adPath -ArgumentList "--install `"C:\Program Files\AnyDesk`" --start-with-win --silent" -Wait
-          Start-Sleep -Seconds 10
+          set AD=C:\AnyDesk\AnyDesk.exe
 
-      - name: Create AnyDesk Reset Script
-        shell: powershell
-        run: |
-          $bat = @'
-          @ECHO OFF
-          TITLE Generate A New AnyDesk ID
-          SC.exe stop AnyDesk >NUL 2>&1
-          SC.exe config AnyDesk start= disabled >NUL 2>&1
-          TASKKILL.exe /F /IM AnyDesk.exe /T >NUL 2>&1
-          TAKEOWN.exe /F "%ProgramData%\AnyDesk" /A /R /D Y >NUL 2>&1
-          ICACLS.exe "%ProgramData%\AnyDesk" /T /C /Q /GRANT Administrators:F System:F Everyone:F >NUL 2>&1
-          RMDIR "%ProgramData%\AnyDesk" /S /Q >NUL 2>&1
-          FOR /D %%U IN ("%SystemDrive%\Users\*") DO (
-          TAKEOWN.exe /F "%%U\AppData\Roaming\AnyDesk" /A /R /D Y >NUL 2>&1
-          ICACLS.exe "%%U\AppData\Roaming\AnyDesk" /T /C /Q /GRANT Administrators:F System:F Everyone:F >NUL 2>&1
-          RMDIR "%%U\AppData\Roaming\AnyDesk" /S /Q >NUL 2>&1
-          )
-          SC.exe config AnyDesk start= auto >NUL 2>&1
-          SC.exe start AnyDesk >NUL 2>&1
-          START "" "C:\Program Files\AnyDesk\AnyDesk.exe"
-          @ECHO Done!
-          '@
-          $bat | Out-File -Encoding ASCII "C:\reset_anydesk.bat"
+          :MAIN
+          start "" "%AD%" --start
+          timeout /t 10 >nul
 
-      - name: Firewall
-        shell: powershell
-        run: |
-          netsh advfirewall firewall add rule name="RustDesk-TCP" dir=in action=allow protocol=TCP localport=21115-21119
-          netsh advfirewall firewall add rule name="RustDesk-UDP" dir=in action=allow protocol=UDP localport=21116
+          for /f "delims=" %%i in ('"%AD%" --get-id') do set ID=%%i
+          if "%ID%"=="" goto MAIN
+          if "%ID%"=="0" goto MAIN
 
-      - name: Keep Alive + AnyDesk Loop
+          echo disalardp | "%AD%" --set-password _full_access
+          echo ANYDESK_ID=%ID% >> %GITHUB_ENV%
+          echo ACTIVE ID: %ID%
+
+          timeout /t 3300 >nul
+
+          sc stop AnyDesk >nul 2>&1
+          taskkill /f /im AnyDesk.exe >nul 2>&1
+          rmdir /s /q "%ProgramData%\AnyDesk" >nul 2>&1
+
+          goto MAIN
+
+      - name: 4. Keep Alive
         shell: powershell
         run: |
           $endTime = (Get-Date).AddHours(6)
           while ((Get-Date) -lt $endTime) {
-            Start-Process "C:\reset_anydesk.bat" -Wait
-            Start-Sleep -Seconds 20
-            & "C:\Program Files\AnyDesk\AnyDesk.exe" --get-id | Out-File "$env:TEMP\anydesk_id.txt"
-            $adID = (Get-Content "$env:TEMP\anydesk_id.txt").Trim()
-            Write-Host "AnyDesk ID: $adID"
-            Write-Host "RustDesk ID: $env:RUSTDESK_ID"
-            Write-Host "Tailscale IP: $env:TAILSCALE_IP"
-            Start-Sleep -Seconds 3300
+              Write-Host "Online | ID: $env:ANYDESK_ID | $(Get-Date)"
+              Start-Sleep -Seconds 60
           }
